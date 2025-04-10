@@ -1,0 +1,546 @@
+# This script must contain a Python class named {scriptObjectName}, which contains a static
+# method 'execute' that receives three inputs:
+# - "spark", which is the pyspark SparkSession in which the code is running
+# - "input", a Python Dict of NodeID (str) -> pyspark DataFrame holding all the input Datasets
+# - "execParams", a Python Dict of str -> str that contains the profile variables
+# 'execute' must return a pyspark DataFrame
+class Script:
+    @staticmethod
+    def execute(spark, input, execParams):
+
+        # profile variables are accessible via the execParams argument and can be read with execParams["myVariable"]
+        # new profile variables can be declared by including a comment in your script with the format below
+        # for more information about using profile variables see https://w.amazon.com/index.php/Cradle/ScalaProfileVariables
+       
+
+        # The following example returns the first input
+        import json
+        import re
+        from collections import Counter
+        from pyspark.sql.functions import col
+        
+        marketplace_id = execParams["marketplace_id"] # ${marketplace_id}
+        DataSetDate = execParams['date']
+       
+        latex_data = spark.sql(f""" 
+                                select asin,
+                                error_1,
+                                error_2,
+                                error_3,
+                                error_4,
+                                error_5,
+                                error_6,
+                                error_7,
+                                error_8,
+                                error_9,
+                                error_10
+                                from Latex_S3;
+                                """)
+                          
+        enriched_defects = spark.sql(f"""
+                            select *
+                            from iop_table;
+                            """)
+                            
+        brand_df = spark.sql(f"""
+                                select *
+                                from brand_registry
+                                """)                    
+        
+        defect_db = spark.sql(f"""
+                                select *
+                                from defect_asins
+                                where isPassed_Brand_match_with_title = "false" or isPassed_Color_match_with_title = "false" or isPassed_model_match_with_title = "false" or isPassed_size_match_with_title = "false"
+                                """
+                                )
+        
+        
+        defect_db = defect_db.select(col('asin').alias('defect_asin'),col('mp_id').alias('marketplace_id'),'gl_code','offer_type','PL','isPassed_Brand_match_with_title','isPassed_Color_match_with_title','isPassed_model_match_with_title','isPassed_size_match_with_title')
+        
+        final_df = latex_data.join(defect_db,latex_data.asin == defect_db.defect_asin,"inner")
+        
+        final_df.repartition(16).write.format("json").mode("append").save(f"s3://pasin1.5/title_latex_autopatch/{marketplace_id}/{DataSetDate}/")
+
+        
+        if final_df.rdd.isEmpty():
+            #df_org = spark.createDataFrame(list(data_dic.values()))
+            emp_RDD = spark.sparkContext.emptyRDD()
+            columns = StructType([])
+            data = spark.createDataFrame(data = emp_RDD,schema = columns)
+            return data
+        else:
+            iop_dic = {}
+            for i_row in enriched_defects.rdd.toLocalIterator():
+                if i_row['BrandValue'] != 'N/A' or i_row['SizeValue'] != 'N/A' or i_row['ColorValue'] != 'N/A' or i_row['ModelNumber'] != 'N/A':
+                    if i_row['asin'] not in iop_dic:
+                                iop_dic[i_row['asin']] = {}
+                                #iop_dic[i_row['asin']]['iop_asin'] = i_row['asin']
+                                #iop_dic[i_row['asin']]['gl_code'] = i_row['gl_code']
+                                #iop_dic[i_row['asin']]['marketplace_id'] = i_row['marketplace_id']
+                                #if i_row['offer_type'] == '1P':
+                                    #iop_dic[i_row['asin']]['offer_type'] = '1P'
+                                #else:
+                                    #iop_dic[i_row['asin']]['offer_type'] = i_row['offer_type']
+                                #iop_dic[i_row['asin']]['PL'] = i_row['PL']
+                                #iop_dic[i_row['asin']]['is_model'] = i_row['is_model']
+                                #iop_dic[i_row['asin']]['is_brand'] = i_row['is_brand']
+                                #iop_dic[i_row['asin']]['is_size'] = i_row['is_size']
+                                #iop_dic[i_row['asin']]['is_color'] = i_row['is_color']
+                                if i_row['BrandValue'] is not None:
+                                    iop_dic[i_row['asin']]['brand'] = i_row['BrandValue']
+                                if i_row['SizeValue'] is not None:
+                                    iop_dic[i_row['asin']]['size'] = i_row['SizeValue']
+                                if i_row['ColorValue'] is not None:
+                                    iop_dic[i_row['asin']]['color'] = i_row['ColorValue']
+                                if i_row['ModelNumber'] is not None:
+                                    iop_dic[i_row['asin']]['model'] = i_row['ModelNumber']
+                    else:
+                            if i_row['BrandValue'] is not None:
+                                iop_dic[i_row['asin']]['brand'] = iop_dic[i_row['asin']]['brand'] + "|" + i_row['BrandValue']
+                            if i_row['SizeValue'] is not None:
+                                iop_dic[i_row['asin']]['size'] =  iop_dic[i_row['asin']]['size'] + "|" + i_row['SizeValue']
+                            if i_row['ColorValue'] is not None:
+                                iop_dic[i_row['asin']]['color'] = iop_dic[i_row['asin']]['color'] + "|" + i_row['ColorValue']
+                            if i_row['ModelNumber'] is not None:
+                                iop_dic[i_row['asin']]['model'] = iop_dic[i_row['asin']]['model'] + "|" + i_row['ModelNumber']
+                                                
+            
+            #iop_data = spark.createDataFrame(list(iop_dic.values()))                    
+            
+            
+            attribute_list = ["error_1", "error_2", "error_3", "error_4", "error_5", "error_6", "error_7", "error_8", "error_9","error_10"]
+            
+            #size_color_restricted_gls = ['107','364','265','293','23','328','309','469','79','194','199','468','263','60','147','267','421','86','200','201','198','504','196','193','75','229','21','497','63','241','353','121']
+    
+            
+            #brand_df = spark.read.csv(r's3://cat-pasin-external-tables-do-not-delete/iop-generic-merger/brand_registry/brand_db000',sep="\t",header=True)
+            
+            brand_dic = {}
+            
+            for one_b in brand_df.rdd.toLocalIterator():
+                if str(one_b.mp_id) == str(marketplace_id):
+                    if one_b.asin not in brand_dic:
+                        brand_dic[one_b['asin']] = []
+                        brand_dic[one_b['asin']].append(one_b['BRAND_NAME'])
+                    else:
+                        brand_dic[one_b['asin']].append(one_b['BRAND_NAME'])
+    
+            
+            restricted_words = ["sale", "available", "now", "amazon", "warranty", "guarantee", "life", "cheap", "best", "bargain",
+                                "sale" ,"new", "yet", "latest", "™", "®", "€", "…", "†", "&Dagger;", "•", "¢", "£", "¥", "©", "¶", "â", "affordable",
+                                "bonus", "free", "buy", "cart", "yours", "shop",".com", "http", "https", "@", "www", "shipping", "prime", "day", "summer", "winter", "spring",
+                                "autumn"]
+    
+            
+            data_dic = {}
+            for one_r in final_df.rdd.toLocalIterator():
+                if one_r['asin'] in data_dic:
+                    continue
+                cnt = 0
+                is_title_extracted = False
+                pasindefectType = list("<____>")
+                title = ""
+                rejection_str = ''
+                sable_val = ''
+                predicted_val = ''
+                iop_val = ''
+                error_val = ''
+                #is_title_modified = 'N'
+                data_dic[one_r['asin']] = {'asin':one_r['asin']}
+                data_dic[one_r['asin']]['title_modified'] = 'N'
+                #data_dic[one_r['asin']]['original_title'] = title         
+                #data_dic[one_r['asin']]['contextdata'] = title
+                data_dic[one_r['asin']]['product_group_code'] = str(one_r['gl_code'])
+                data_dic[one_r['asin']]['marketplace_id'] = str(one_r['marketplace_id'])
+                data_dic[one_r['asin']]['use_case'] = 'FILE_UPLOAD_PASIN_' + str(one_r['offer_type'])
+                data_dic[one_r['asin']]['client'] = 'PASIN'
+                data_dic[one_r['asin']]['error_code'] = 'titleCorrectionDefect'
+                data_dic[one_r['asin']]['priority'] = '15'
+                data_dic[one_r['asin']]['source'] = 'manual_upload'
+                data_dic[one_r['asin']]['type'] = 'asinType'
+                data_dic[one_r['asin']]['product_line'] = 'default'
+                data_dic[one_r['asin']]['attribute_name'] = 'title'
+                data_dic[one_r['asin']]['reason_rejection'] = ''
+                data_dic[one_r['asin']]['sable'] = ''
+                data_dic[one_r['asin']]['predicted'] = ''
+                data_dic[one_r['asin']]['iop'] =''
+                data_dic[one_r['asin']]['error'] = ''
+    
+    
+                for err in attribute_list:
+                    if one_r[err] is None:
+                        continue
+                    if is_title_extracted == False:
+                        try:
+                            title = str(one_r[err]).split("item_name")[1]
+                            start = title.find("[")
+                            end = title.rfind("]")
+                            title = title[start + 2:end-1]
+                            if len(str(title)) < 20:
+                                continue
+                            updated_title = title
+                            is_title_extracted = True
+                        except:
+                            #title = ''
+                            continue    
+                    
+                    
+                    if "predicted brand" in str(one_r[err]):
+                        if one_r['isPassed_Brand_match_with_title'] == 'false':
+                            error_val += 'brand;'
+                            result = re.findall("\[(.*?)\]", one_r[err])
+                            if len(result) > 0:
+                                if result[0] == '':
+                                    sable_brand = ''
+                                else:
+                                    sable_brand = result[0][1:-1]
+                                if result[1] == '':
+                                    predicted_brand = ''
+                                else:
+                                    predicted_brand = result[1][1:-1]
+                            else:
+                                sable_brand = ''
+                                predicted_brand = ''
+                            
+                            if sable_brand != predicted_brand:    
+                                sable_val += 'brand:' + sable_brand + ';'
+                                predicted_val += 'brand:' + predicted_brand + ';'
+                                
+                                
+                                #brand check
+                                if one_r['asin'] in brand_dic:
+                                    brand_reg = brand_dic[one_r['asin']]
+                                else:
+                                    brand_reg = []
+                                is_brand_updated = False
+                                brand_check = [x for x in str(sable_brand).split() if len(x) > 3 and x.lower() in updated_title.lower()]
+                                if len(brand_check) <= 0:
+                                    if len(brand_reg) > 0:
+                                        #register_brands = [brnd[0] for brnd in df.select("brand_name").toLocalIterator()]
+                                        if sable_brand in brand_reg:
+                                            if sable_brand in updated_title:
+                                                rejection_str += 'brand exisis;'
+                                            elif str(sable_brand).lower() in updated_title.lower():
+                                                title_lower = str(updated_title).lower()
+                                                str_str = title_lower.index(str(sable_brand).lower())
+                                                end_str = str_str + len(str(sable_brand).lower())
+                                                updated_title = sable_brand + " " + updated_title[:str_str] + updated_title[end_str+1:]
+                                                is_brand_updated = True
+                                            else:
+                                                updated_title = sable_brand + " " + updated_title
+                                                is_brand_updated = True
+                                        else:
+                                            if str(sable_brand).lower() in str(updated_title).lower():
+                                                title_lower = updated_title.lower()
+                                                str_str = title_lower.index(sable_brand.lower())
+                                                end_str = str_str + len(sable_brand.lower())
+                                                updated_title = brand_reg[0] + " " + updated_title[:str_str] + updated_title[end_str+1:]
+                                                is_brand_updated = True
+                                            else:
+                                                updated_title = brand_reg[0] + " " + updated_title
+                                                is_brand_updated = True
+                                    else:
+                                        if sable_brand.lower() in updated_title.lower():
+                                            rejection_str += 'brand exisis;'
+                                            
+                                        else:
+                                            if one_r['asin'] in iop_dic:
+                                                iop_brand_list = str(iop_dic[one_r['asin']]['brand']).split('|')
+                                            #iop_brand_list = one_r['brand'].split("|")
+                                                iop_brand_list = [itn for itn in iop_brand_list if itn != "N/A"]
+                                            
+                                                if len(iop_brand_list) > 0:
+                                                    att_val_dic = Counter(iop_brand_list).most_common()
+                                                    iop_brand_val, val_count = att_val_dic[0]
+                                                    iop_brand_score = round((val_count / len(iop_brand_list)), 2)
+                                                else:
+                                                    iop_brand_val = '' 
+                                                    iop_brand_score = 0
+                                                    
+                                                iop_val += 'brand:' + iop_brand_val + ';'  
+                                                if iop_brand_score >= 0.9 and sable_brand == iop_brand_val:
+                                                    updated_title = sable_brand + " " + updated_title
+                                                    is_brand_updated = True
+                                                else:
+                                                    rejection_str += 'brand iop score;'
+                                            else:
+                                                rejection_str += 'brand missing iop data;'
+                                    if is_brand_updated == True:
+                                        pasindefectType[1] = "b" 
+                                        #is_title_modified = 'Y'
+                                        data_dic[one_r['asin']]['title_modified'] = "Y"
+                                else:
+                                    rejection_str += 'brand_exists;'
+                            
+                            else:
+                                rejection_str += 'predicted brand and sable same;'
+                         
+                        cnt += 1
+    
+                        
+                    
+                    
+                    elif "predicted size" in str(one_r[err]):
+                        #if str(one_r['gl_code']) not in size_color_restricted_gls and one_r['isPassed_size_match_with_title'] == 'false':
+                        if one_r['isPassed_size_match_with_title'] == 'false':
+                            error_val += 'size;'
+                            result = re.findall("\[(.*?)\]", one_r[err])
+                            if len(result) > 0:
+                                if result[0] == '':
+                                    sable_size = ''
+                                else:
+                                    sable_size = result[0][1:-1]
+                                if result[1] == '':
+                                    predicted_size = ''
+                                else:
+                                    predicted_size = result[1][1:-1]
+                            else:
+                                sable_size = ''
+                                predicted_size = ''
+                            
+                            if sable_size != predicted_size:    
+                                sable_val += 'size:' + sable_size + ';'
+                                predicted_val += 'size:' + predicted_size + ';'
+        
+                                    
+                                if one_r['asin'] in iop_dic:
+                                    iop_size_list = str(iop_dic[one_r['asin']]['size']).split('|')
+            
+                                #iop_size_list = one_r['size'].split("|")
+                                    iop_size_list = [itn for itn in iop_size_list if itn != "N/A"]
+                                    if len(iop_size_list) > 0:
+                                        att_val_dic = Counter(iop_size_list).most_common()
+                                        iop_size_val, val_count = att_val_dic[0]
+                                        iop_size_score = round((val_count / len(iop_size_list)), 2)
+                                    else:
+                                        iop_size_val = '' 
+                                        iop_size_score = 0
+                                    
+                                    iop_val += 'size:' + iop_size_val + ';'
+                                    
+                                    if iop_size_score >= 0.9 and sable_size == iop_size_val:
+                                        is_size_updated = False
+                                        size_update = str(sable_size).lower().replace("-", " ").replace("x", " ")
+                                        size_check = [x for x in size_update.split() if x in updated_title.lower()]
+                                        numeric_matches = re.findall('[0-9\.]+', sable_size)
+                                        numeric_check = [x for x in numeric_matches if x in updated_title]
+                                        size_check += numeric_check
+                                        if len(size_check) <=0:
+                                            updated_title = updated_title + ", " + sable_size
+                                            is_size_updated = True
+                                        else:
+                                            rejection_str += 'size exists;'
+                                            
+                                        if is_size_updated == True:
+                                            pasindefectType[2] = "s"
+                                            #is_title_modified = 'Y'
+                                            data_dic[one_r['asin']]['title_modified'] = "Y"
+                                    else:
+                                        rejection_str += 'size iop score;'
+                                else:
+                                    rejection_str += 'size missing iop data;'
+                            
+                            else:
+                                rejection_str += 'predicted size and sable same;'
+                        #else:
+                            #rejection_str += 'size restricted gls;'
+                        
+                        cnt += 1
+    
+                
+                    elif "predicted color" in str(one_r[err]):
+                        #if str(one_r['gl_code']) not in size_color_restricted_gls and one_r['isPassed_Color_match_with_title'] == 'false':
+                        if one_r['isPassed_Color_match_with_title'] == 'false':
+                            error_val += 'color;'
+                            result = re.findall("\[(.*?)\]", one_r[err])
+                            if len(result) > 0:
+                                if result[0] == '':
+                                    sable_color = ''
+                                else:
+                                    sable_color = result[0][1:-1]
+                                if result[1] == '':
+                                    predicted_color = ''
+                                else:
+                                    predicted_color = result[1][1:-1]
+                            else:
+                                sable_color = ''
+                                predicted_color = ''
+                            
+                            if sable_color != predicted_color:
+                                sable_val += 'color:' + sable_color + ';'
+                                predicted_val += 'color:' + predicted_color + ';'
+        
+        
+                                if one_r['asin'] in iop_dic:
+                                    iop_color_list = str(iop_dic[one_r['asin']]['color']).split('|')
+        
+                                    #iop_color_list = one_r['color'].split("|")
+                                    iop_color_list = [itn for itn in iop_color_list if itn != "N/A"]
+                                    
+                                    if len(iop_color_list) > 0:
+                                        att_val_dic = Counter(iop_color_list).most_common()
+                                        iop_color_val, val_count = att_val_dic[0]
+                                        iop_color_score = round((val_count / len(iop_color_list)), 2)
+                                    else:
+                                        iop_color_val = '' 
+                                        iop_color_score = 0
+            
+                                    iop_val += 'color:' + iop_color_val + ';'
+                                    
+                                    if iop_color_score >= 0.9 and sable_color == iop_color_val:
+                                        is_color_updated = False
+                                        color_update = str(sable_color).lower().replace("-", " ")
+                                        color_check = [x for x in color_update.split() if len(x) > 2 and x in updated_title.lower()]
+                                        if len(color_check) <= 0:
+                                            updated_title = updated_title + ", " + sable_color
+                                            is_color_updated = True
+                                        else:
+                                            rejection_str += 'color exists;'
+                                        if is_color_updated:
+                                            #data_dic[one_r['asin']]['contextdata'] = updated_title
+                                            pasindefectType[3] = "c" 
+                                            #is_title_modified = 'Y'
+                                            data_dic[one_r['asin']]['title_modified'] = "Y"
+                            
+                                    else:
+                                        rejection_str += 'color iop score;'
+                            
+                                else:
+                                    rejection_str += 'color missing iop data;'
+                            else:
+                                rejection_str += 'predicted color and sable same;'
+                                
+                        #else:
+                            #rejection_str  += 'color restricted gls'
+                        cnt += 1
+                    
+                    elif "predicted model" in str(one_r[err]):
+                        if one_r['isPassed_model_match_with_title'] == 'false':
+                            error_val += 'model;'
+                            if one_r['PL'] == 'Consumables':
+                                rejection_str += 'model Consumables;'
+                                continue
+                            if str(one_r['gl_code']) == '193':
+                                rejection_str += 'model apparels;'
+                                continue
+    
+                            result = re.findall("\[(.*?)\]", one_r[err])
+                            if len(result) > 0:
+                                if result[0] == '':
+                                    sable_model = ''
+                                else:
+                                    sable_model = result[0][1:-1]
+                                if result[1] == '':
+                                    predicted_model = ''
+                                else:
+                                    predicted_model = result[1][1:-1]
+                            else:
+                                sable_model = ''
+                                predicted_model = ''
+                            
+                            if sable_model != predicted_model:
+                            
+                                sable_val += 'model:' + sable_model + ';'
+                                predicted_val += 'model:' + predicted_model + ';'
+            
+                                    
+                                if one_r['asin'] in iop_dic:
+                                    iop_model_list = str(iop_dic[one_r['asin']]['model']).split('|')
+                                    #iop_model_list = one_r['model'].split("|")
+                                    iop_model_list = [itn for itn in iop_model_list if itn != "N/A"]
+            
+                                    if len(iop_model_list) > 0:
+                                        att_val_dic = Counter(iop_model_list).most_common()
+                                        iop_model_val, val_count = att_val_dic[0]
+                                        iop_model_score = round((val_count / len(iop_model_list)), 2)
+                                    else:
+                                        iop_model_val = '' 
+                                        iop_model_score = 0
+                                    
+                                    iop_val += 'model:' + iop_model_val + ';'
+                                    
+                                    if iop_model_score >= 0.9 and sable_model == iop_model_val:
+                                        is_model_updated = False
+                                        model_check = [x for x in str(sable_model).split() if x.lower() in updated_title.lower()]
+                                        if len(model_check) <= 0 and len(str(sable_model)) > 4:
+                                            if re.search("[0-9]+", str(sable_model)) and not re.search("[\s]+]", str(sable_model)):
+                                                updated_title = updated_title + ", " + sable_model
+                                                is_model_updated = True
+                                            else:
+                                                rejection_str += 'model style failed;'
+                                        else:
+                                            rejection_str += 'model exists;'
+                                                #return updated_title,is_updated
+                                        #else:
+                                        if is_model_updated == True:
+                                            pasindefectType[4] = "m"
+                                            #is_title_modified = 'Y'
+                                            data_dic[one_r['asin']]['title_modified'] = "Y"
+                            
+                                    else:
+                                        rejection_str += 'model iop score;'
+                                
+                                else:
+                                    rejection_str += 'model missing in iop data;'
+                        
+                            else:
+                                rejection_str += 'predicted model and sable are same;'
+                        cnt += 1
+    
+                
+                    if cnt >= 4:
+                        break 
+                    
+                #Ensure that title is not empty
+                if (one_r['asin'] in data_dic):
+                    if title != '' or title is not None:
+                        updated_title = updated_title.replace("\\","")
+                        data_dic[one_r['asin']]['contextdata'] = str(updated_title)
+                        if len(str(updated_title)) > 199:
+                            data_dic[one_r['asin']]['title_modified'] = 'N'
+                            rejection_str += 'chars more than 199;'
+                        elif 'generic' in updated_title.lower():
+                            data_dic[one_r['asin']]['title_modified'] = "R"
+                            rejection_str += 'restricted_words;'
+                        else:    
+                            for word in restricted_words:
+                                if " " + word in updated_title.lower():
+                                #if word in data_dic[one_r['asin']]['contextdata']:
+                                    data_dic[one_r['asin']]['title_modified'] = "R"
+                                    #is_title_modified  = 'R'
+                                    rejection_str += 'restricted_words;'
+                                    break
+                        data_dic[one_r['asin']]['pasindefectType'] = ''.join(pasindefectType)
+                    else:
+                        data_dic[one_r['asin']]['title_modified'] = "N" 
+                        #is_title_modified = 'N'
+                        rejection_str += 'title empty;'
+                    #data_dic[one_r['asin']]['title_modified'] = is_title_modified
+                    if data_dic[one_r['asin']]['pasindefectType'] == '<____>':
+                        if rejection_str == '':
+                            rejection_str += "No Error"
+                    data_dic[one_r['asin']]['reason_rejection'] =rejection_str
+                    data_dic[one_r['asin']]['sable'] = sable_val
+                    data_dic[one_r['asin']]['predicted'] = predicted_val
+                    data_dic[one_r['asin']]['iop'] = iop_val
+                    data_dic[one_r['asin']]['error'] = error_val
+    
+                    
+            df_org = spark.createDataFrame(list(data_dic.values()))
+            #df_auto_patch = df_org
+            df_auto_patch = df_org.filter(df_org.title_modified == 'Y')
+            
+            df_err = df_org.filter(df_org.title_modified != 'Y')
+            
+            df_auto_patch = df_auto_patch.select(["client","use_case","error_code","priority","source","type","asin","marketplace_id","product_group_code","product_line","attribute_name","pasindefectType","contextdata"])
+            
+            df_err_final = df_err.select(["client","use_case","error_code","priority","source","type","asin","marketplace_id","product_group_code","product_line","attribute_name","pasindefectType","contextdata","title_modified","reason_rejection","sable","predicted","iop","error"])
+        
+            df_err_final.repartition(8).write.format("json").mode("append").save(f"s3://pasin1.5/title_validation/AR/{marketplace_id}/{DataSetDate}/")    
+            
+            #df_auto_patch.repartition(1).write.format("csv").mode("append").save(f"s3://cat-pasin-external-tables-do-not-delete/Olympic_Title_Autopatch/",header=True)
+            return df_auto_patch
+            
+            
+                            
+                                    

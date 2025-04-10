@@ -1,0 +1,391 @@
+# This script must contain a Python class named {scriptObjectName}, which contains a static
+# method 'execute' that receives three inputs:
+# - "spark", which is the pyspark SparkSession in which the code is running
+# - "input", a Python Dict of NodeID (str) -> pyspark DataFrame holding all the input Datasets
+# - "execParams", a Python Dict of str -> str that contains the profile variables
+# 'execute' must return a pyspark DataFramedefect_count
+class Script:
+    @staticmethod
+    def execute(spark, input, execParams):
+
+        # profile variables are accessible via the execParams argument and can be read with execParams["myVariable"]
+        # new profile variables can be declared by including a comment in your script with the format below
+        # for more information about using profile variables see https://w.amazon.com/index.php/Cradle/ScalaProfileVariables
+        
+        ####  szie_color_restricted_GLs beacuse of variation has not impact on dp page ####
+        import datetime
+        
+        region_id = execParams["region_id"] # ${region_id}
+        
+        mp_id =  execParams["marketplace_id"] # ${marketplace_id}
+        
+        DataSetDate = execParams['date']
+        
+        #+ datetime.timedelta(days=3)
+        
+        #dt_obj = datetime.datetime.strptime(str(DataSetDate), "%Y-%m-%d") + datetime.timedelta(days=3)
+        
+        dt_obj = datetime.datetime.strptime(str(DataSetDate), "%Y-%m-%d") - datetime.timedelta(days=4)
+        
+        
+        #yr = int(dt_obj.year)
+        wk = int(dt_obj.strftime("%V"))
+        #mo = int(dt_obj.month)
+        
+        #size_color_restricted_Gls = ["107","364","265","293","23","328","309","469","79","194","199","468","263","60","147","267","421","86","200","201","198","504","196","193","75","229","21","497","63","241","353","121"]
+        
+        month_dic = {'1':'Jan','2':'Feb','3':'Mar','4':'Apr','5':'May','6':'Jun','7':'Jul','8':'Aug','9':'Sep','10':'Oct','11':'Nov','12':'Dec'}
+        
+
+        defect_df = spark.sql(f"""
+                                select *
+                                from pasin_defects;
+                                """
+        )
+        fixed_data_raw = spark.sql(f"""
+                                select asin,
+                                marketplace_id,	
+                                product_group_code, 
+                                attribute_name,	
+                                offer_type,	
+                                pasindefecttype,
+                                state_name,
+                                bp_count,
+                                region,
+                                day_date
+                                from PASIN_fixed_table;""")
+                               
+        fixed_data = fixed_data_raw.filter(fixed_data_raw.marketplace_id == str(mp_id))
+        
+        pasin_fix_dic = {}
+        for rwn in fixed_data.rdd.toLocalIterator():
+            asin_mp = rwn['asin'] + "_" + rwn['marketplace_id']
+            if asin_mp not in pasin_fix_dic:
+                #asin_mp = rwn['asin'] + "_" + rwn['marketplace_id']
+                pasin_fix_dic[asin_mp] = {"asin:":rwn['asin'], "marketplace_id":rwn['marketplace_id']}
+                pasin_fix_dic[asin_mp]['title_fix'] = ''
+                pasin_fix_dic[asin_mp]['lpd_fix'] = ''
+                pasin_fix_dic[asin_mp]['bp_fix'] = ''
+                pasin_fix_dic[asin_mp]['bp_fix_count'] = 0
+
+            if rwn["attribute_name"] == "title":
+                if rwn['pasindefecttype'] is not None:
+                    #if pasin_fix_dic[asin_mp]['title_fix'] == '':
+                    if rwn['pasindefecttype'] not in pasin_fix_dic[asin_mp]['title_fix']:
+                        pasin_fix_dic[asin_mp]['title_fix'] = pasin_fix_dic[asin_mp]['title_fix'] + rwn['pasindefecttype']
+            
+            if rwn["attribute_name"] == "lpd":
+                if rwn['pasindefecttype'] is not None:
+                    #if pasin_fix_dic[asin_mp]['lpd_fix']  == '':
+                    if rwn['pasindefecttype'] not in pasin_fix_dic[asin_mp]['lpd_fix']:
+                        pasin_fix_dic[asin_mp]['lpd_fix'] = pasin_fix_dic[asin_mp]['lpd_fix'] + rwn['pasindefecttype']
+                        
+            if rwn["attribute_name"] == "bullet":
+                if rwn['pasindefecttype'] is not None:
+                    #if pasin_fix_dic[asin_mp]['bp_fix'] == '':
+                    if rwn['pasindefecttype'] not in pasin_fix_dic[asin_mp]['bp_fix']:
+                        pasin_fix_dic[asin_mp]['bp_fix'] = pasin_fix_dic[asin_mp]['bp_fix'] + rwn['pasindefecttype']
+                if rwn['state_name'] != 'LocalizationWaitState':
+                    pasin_fix_dic[asin_mp]['bp_fix_count'] = rwn['bp_count'] 
+
+        # PART - II  Identfying Defects        
+        
+        pasin_dic = {}
+        for ro in defect_df.rdd.toLocalIterator():
+            
+            ky = str(ro['ASIN']) + "_" + str(ro["MP_ID"])
+            pasin_dic[ky] = {}
+            
+            pasin_dic[ky]["asin"] = ro['ASIN']
+            pasin_dic[ky]["pl"] = ro['PL']
+            pasin_dic[ky]["gl"]  = ro['GL']
+            pasin_dic[ky]['asin_source'] = 'Seller'
+            pasin_dic[ky]['asin_pub_check'] = 'YES'
+            pasin_dic[ky]['item_type'] = 'Newly Created'
+            pasin_dic[ky]['region_id'] = int(region_id)
+            #try:
+                #pasin_dic[ky]['initial_gv'] = int(ro['gv'])
+            #except:
+                #pasin_dic[ky]['initial_gv'] = None
+            pasin_dic[ky]['initial_gv'] = 0
+            pasin_dic[ky]['gms'] = '0'
+            pasin_dic[ky]['wt_mat_title_check'] = 'NA'
+            pasin_dic[ky]['vol_mat_title_check'] = 'NA'
+            pasin_dic[ky]['unit_mat_title_check'] = 'NA'
+            pasin_dic[ky]['num_mat_title_check'] = 'NA'
+            pasin_dic[ky]['missing_brwse_node_check'] = 'NA'
+            pasin_dic[ky]['wrng_leaf_node_check'] = 'NA'
+            pasin_dic[ky]['brse_node_relevance_check'] = 'NA'
+            pasin_dic[ky]['lpd_relevance_check'] = ro["CAPE_LPD_PROD_REDUNDANT"]
+            pasin_dic[ky]['brand_mat_lpd_check'] = 'NA'
+            pasin_dic[ky]['cpq_check'] = 'NA'
+            pasin_dic[ky]['prod_relevance_check'] = 'NA'
+            pasin_dic[ky]['idq_brand_check'] = 'NA'
+            pasin_dic[ky]['gk_available_check'] = 'NA'
+            pasin_dic[ky]['gk_relevance_check'] = 'NA'
+            pasin_dic[ky]['min_5_kywrd_check'] = 'NA'
+            pasin_dic[ky]['barcode_ck'] = 'NA'
+            pasin_dic[ky]['barcode_count'] = 0
+            pasin_dic[ky]['barcode_only'] = 0
+            pasin_dic[ky]['generic_keywords_ck'] = 'NA'
+            pasin_dic[ky]['generic_keywords_count'] = 0
+            pasin_dic[ky]['generic_keywords_only'] = 0
+            pasin_dic[ky]['image_ck'] = 'NA'
+            pasin_dic[ky]['image_count'] = 0
+            pasin_dic[ky]['image_only'] = 0
+            pasin_dic[ky]['item_lpd_bullet_ptd_ck'] = 'NA'
+            pasin_dic[ky]['item_lpd_bullet_ptd_count'] = 0
+            pasin_dic[ky]['item_lpd_bullet_ptd_only'] = 0
+            pasin_dic[ky]['itk_ck'] = 'NA'
+            pasin_dic[ky]['itk_count'] = 0
+            pasin_dic[ky]['itk_only']= 0
+            pasin_dic[ky]['main_img_check'] = 'NA'
+            pasin_dic[ky]['main_img_zoom_check'] = 'NA'
+            pasin_dic[ky]['image_mat_title_check'] = 'NA'
+            pasin_dic[ky]['missing_barcode_check'] = 'NA'
+            pasin_dic[ky]['asin_status'] = ro['PASIN_STATUS']
+            pasin_dic[ky]['userid'] = "autopatch"
+            pasin_dic[ky]['year'] = int(ro['YEAR'])
+            pasin_dic[ky]['month'] = month_dic[str(ro['MONTH'])]
+            pasin_dic[ky]['week'] = int(wk)
+            #pasin_dic[ky]['week'] = ro['WEEK']
+            #pasin_dic[ky]['week'] = 24
+            pasin_dic[ky]['node'] = 'NA'
+            pasin_dic[ky]['defect_count'] = 0
+            pasin_dic[ky]['correction_count_of_asins'] = 0
+            pasin_dic[ky]['delta_for_corection'] = 0
+            pasin_dic[ky]['yes_count'] = 0
+            pasin_dic[ky]['na_count'] = 0
+            pasin_dic[ky]['no_count']=0
+            pasin_dic[ky]['is_actual_corrected'] = 'NA'
+            pasin_dic[ky]['validation_for_correction'] = 0
+            pasin_dic[ky]['is_variation_corrected'] = 'NA'
+            pasin_dic[ky]['brand_mat_bullet_check'] = 'NA'
+            pasin_dic[ky]['bullet_relevance_check'] = ro["CAPE_BP_PROD_REDUNDANT"]
+            pasin_dic[ky]['cons_pasin_a'] = ''
+            pasin_dic[ky]['cons_pasin_b'] = ''
+            pasin_dic[ky]['cons_pasin_c'] = ''
+            pasin_dic[ky]['cons_pasin_d'] = str(ro['PRODUCT_TYPE'])
+            pasin_dic[ky]['cons_pasin_e'] = ''
+            pasin_dic[ky]["marketplace_id"] =  int(ro['MP_ID'])
+            if ro['buy_box_status'] == '1P':
+                pasin_dic[ky]['is_retail'] = 'Y'
+            else:
+                pasin_dic[ky]['is_retail'] = 'N'
+            if ro['buy_box_status'] == '3P':
+                pasin_dic[ky]['is_3P'] = 'Y'
+            else:
+                pasin_dic[ky]['is_3P'] = 'N'
+
+            
+            # THIS ARE THE BELOW DEFECTS CHECKS CARRIED OUT IN PASIN 1.5 
+            #if ro['bp_count'] == 'NA' or ro['bp_count'] == '' or ro['bp_count'] is None:
+                #pasin_dic[ky]['idq_min_bp_check'] = ''
+            #else:
+                #pasin_dic[ky]['idq_min_bp_check'] = str(ro['bp_count'])
+            try:
+                pasin_dic[ky]['idq_min_bp_check'] = int(ro['bp_count'])
+            except:
+                pasin_dic[ky]['idq_min_bp_check'] = ''
+            pasin_dic[ky]['brand_mat_title_check'] = 'YES'
+            pasin_dic[ky]['color_mat_title_check'] = 'YES'
+            pasin_dic[ky]['size_mat_title_check'] = 'YES'
+            pasin_dic[ky]['model_mat_title_check'] = 'YES'
+            pasin_dic[ky]['missing_bullet_check'] = 'YES'
+            pasin_dic[ky]['invalid_values_bullet_check'] = 'YES'
+            pasin_dic[ky]['missing_lpd_check'] = 'YES'
+            pasin_dic[ky]['invalid_values_lpd_check'] = 'YES'
+            
+            # CHECK BASED ON BASIC DEFECTS
+            pasin_dic[ky]["defectTitle"] = ''
+            pasin_dic[ky]["defectBP"] = ''
+            pasin_dic[ky]["defectLPD"] = ''
+            pasin_dic[ky]["is_Title_fixed"] = "NR"
+            pasin_dic[ky]["is_BP_fixed"] = "NR"
+            pasin_dic[ky]["is_LPD_fixed"] = "NR"
+
+
+            
+
+
+            
+            title_defects =""
+            bp_defects = ""
+            lpd_defects = ""
+            defect_count = 0
+
+            if ro["CAPE_TITL_BRAND"] == "N":
+                pasin_dic[ky]['brand_mat_title_check'] = 'NO'
+                title_defects = title_defects + "b"
+                defect_count += 1
+
+            if ro["CAPE_TITL_SIZE"] == "N":
+                #if ro["GL_CODE"] not in size_color_restricted_Gls:
+                pasin_dic[ky]['size_mat_title_check'] = 'NO'
+                title_defects = title_defects + "s"
+                defect_count += 1
+                #else:
+                    #pasin_dic[ky]['size_mat_title_check'] = 'NA'
+            
+            if ro["CAPE_TITL_COLOR"] == "N":
+                #if ro["GL_CODE"] not in size_color_restricted_Gls:
+                pasin_dic[ky]['color_mat_title_check'] = 'NO'
+                title_defects = title_defects + "c"
+                defect_count += 1
+                #else:
+                    #pasin_dic[ky]['color_mat_title_check'] = 'NA'
+                    
+            if ro["CAPE_TITL_MODEL_NO"] == "N":
+                if ro["PL"] != "Consumables":
+                    if str(ro["GL_CODE"]) != "193":
+                        pasin_dic[ky]['model_mat_title_check'] = 'NO'
+                        title_defects = title_defects + "m"
+                        defect_count += 1
+                    else:
+                        pasin_dic[ky]['model_mat_title_check'] = 'NA'
+                else:
+                    pasin_dic[ky]['model_mat_title_check'] = 'NA'
+                    
+            if ro["CAPE_BP_AVAIL"] == "N":
+                pasin_dic[ky]['missing_bullet_check'] = 'NO'
+                bp_defects = bp_defects + "a"
+                defect_count += 1
+            if ro["CAPE_NO_INVAL_BP"] == "N":
+                pasin_dic[ky]['invalid_values_bullet_check'] = 'NO'
+                bp_defects = bp_defects + "i"
+                defect_count += 1
+            if ro["CAPE_LPD_AVAIL"] == "N":
+                pasin_dic[ky]['missing_lpd_check'] = 'NO'
+                lpd_defects = lpd_defects + "a"
+                defect_count += 1
+            if ro["CAPE_NO_INVAL_LPD"] == "N":
+                pasin_dic[ky]['invalid_values_lpd_check'] = 'NO'
+                lpd_defects = lpd_defects + "i"
+                defect_count += 1
+                
+            #if ro["CAPE_LPD_PROD_REDUNDANT"] == "N":
+                #lpd_defects = lpd_defects + "r"
+                #defect_count += 1
+            #if ro["CAPE_BP_PROD_REDUNDANT"] == "N":
+                #bp_defects = bp_defects + "r"
+                #defect_count += 1
+            if ro["IS_PTD_DEFECT"] == "N":
+                bp_defects = bp_defects + "p"
+                defect_count += 1
+
+            # ADDED THE DEFECT COUNTS AS WBR CHANGED TO DEFECTS
+            
+            pasin_dic[ky]['defect_count']  = defect_count
+            
+
+
+
+            if title_defects != "":
+                pasin_dic[ky]["defectTitle"] = title_defects
+            else:
+                pasin_dic[ky]["defectTitle"] = ""
+            if bp_defects != "":    
+                pasin_dic[ky]["defectBP"] = bp_defects
+            else:
+                pasin_dic[ky]["defectBP"] = ""
+            if lpd_defects != "":
+                pasin_dic[ky]["defectLPD"] = lpd_defects
+            else:
+                pasin_dic[ky]["defectLPD"] = ""
+    
+        
+            if ky in pasin_fix_dic:
+                if pasin_fix_dic[ky]['title_fix'] is not None:
+                    title_dup_removal = ''.join(set(pasin_fix_dic[ky]['title_fix']))
+                    pasin_dic[ky]['cons_pasin_a'] = title_dup_removal
+                else:
+                    pasin_dic[ky]['cons_pasin_a'] = pasin_fix_dic[ky]['title_fix']
+                if pasin_fix_dic[ky]['bp_fix'] is not None:
+                    bp_dup_removal = ''.join(set(pasin_fix_dic[ky]['bp_fix']))
+                    pasin_dic[ky]["cons_pasin_b"] = bp_dup_removal
+                else:
+                    pasin_dic[ky]["cons_pasin_b"] = pasin_fix_dic[ky]['bp_fix']
+                if pasin_fix_dic[ky]['lpd_fix'] is not None:
+                    lpd_dup_removal = ''.join(set(pasin_fix_dic[ky]['lpd_fix']))
+                    pasin_dic[ky]["cons_pasin_c"] = lpd_dup_removal
+                else:
+                    pasin_dic[ky]["cons_pasin_c"] = pasin_fix_dic[ky]['lpd_fix']
+                if pasin_fix_dic[ky]['bp_fix_count'] == 'NA':
+                    pasin_dic[ky]['cons_pasin_e'] = ''
+                else:
+                    pasin_dic[ky]['cons_pasin_e'] = str(pasin_fix_dic[ky]['bp_fix_count'])
+                
+            defects_fixed = []
+            
+            if title_defects != "":
+                if len(pasin_dic[ky]["defectTitle"]) <= len(pasin_dic[ky]["cons_pasin_a"]):
+                    pasin_dic[ky]["is_Title_fixed"] = "Y"
+                    defects_fixed.append("Y")
+                else:
+                    pasin_dic[ky]["is_Title_fixed"] = "N"
+                    defects_fixed.append("N")
+            else:
+                pasin_dic[ky]["is_Title_fixed"] = "NR"
+                defects_fixed.append("NR")
+                
+            if bp_defects != "":
+                if len(pasin_dic[ky]["defectBP"]) <= len(pasin_dic[ky]["cons_pasin_b"]):
+                    if ro["CAPE_BP_AVAIL"] == 'N' or int(ro["bp_count"]) < 3:
+                        #if int(pasin_dic[ky]['cons_pasin_e']) >= 3:
+                        if int(pasin_fix_dic[ky]['bp_fix_count']) >= 3:
+                            pasin_dic[ky]["is_BP_fixed"] = "Y"
+                            defects_fixed.append("Y")
+                        else:
+                            pasin_dic[ky]["is_BP_fixed"] = "N"
+                            defects_fixed.append("N")
+                    else:
+                        pasin_dic[ky]["is_BP_fixed"] = "Y"
+                        defects_fixed.append("Y")
+
+                else:
+                    pasin_dic[ky]["is_BP_fixed"] = "N"
+                    defects_fixed.append("N")
+            else:
+                pasin_dic[ky]["is_BP_fixed"] = "NR"
+                defects_fixed.append("NR")
+                
+            if lpd_defects != "":
+                if len(pasin_dic[ky]["defectLPD"]) <= len(pasin_dic[ky]["cons_pasin_c"]):
+                    pasin_dic[ky]["is_LPD_fixed"] = "Y"
+                    defects_fixed.append("Y")
+                else:
+                    pasin_dic[ky]["is_LPD_fixed"] = "N"
+                    defects_fixed.append("N")
+                    #defects_fixed = "N"
+            else:
+                pasin_dic[ky]["is_LPD_fixed"] = "NR"
+                defects_fixed.append("NR")
+    
+            # IDENTIFYING THE FIXED STATUS
+            
+            if ro['PASIN_STATUS'] == 'Perfect ASIN':
+                pasin_dic[ky]["post_enrich_status"] = "Perfect"
+                
+            elif  lpd_defects == "" and bp_defects == "" and title_defects == "" and ro['bp_count'] >= 3:
+                pasin_dic[ky]["post_enrich_status"] = "Perfect"
+            else:
+                if "N" in defects_fixed and "Y" in defects_fixed:
+                    pasin_dic[ky]["post_enrich_status"] = "Partial fixed"
+                elif "Y" in defects_fixed:
+                    pasin_dic[ky]["post_enrich_status"] = "Fixed"
+                else:
+                    pasin_dic[ky]["post_enrich_status"] = "Not fixed"
+                    
+
+        autopatched_df = spark.createDataFrame(list(pasin_dic.values()))
+        
+        autopatched_df = autopatched_df.select(["asin","pl","gl","asin_source","asin_pub_check","item_type","region_id","marketplace_id","initial_gv","gms","is_retail","is_3P","brand_mat_title_check","color_mat_title_check",
+                                                "size_mat_title_check","model_mat_title_check","wt_mat_title_check","vol_mat_title_check","unit_mat_title_check","num_mat_title_check","missing_brwse_node_check","wrng_leaf_node_check","brse_node_relevance_check",
+                                                "invalid_values_bullet_check","missing_bullet_check","brand_mat_bullet_check","bullet_relevance_check","idq_min_bp_check","invalid_values_lpd_check","missing_lpd_check","lpd_relevance_check",	
+                                                "brand_mat_lpd_check","cpq_check","prod_relevance_check","idq_brand_check","gk_available_check","gk_relevance_check","min_5_kywrd_check","barcode_ck","barcode_count","barcode_only","generic_keywords_ck",	
+                                                "generic_keywords_count","generic_keywords_only","image_ck","image_count","image_only","item_lpd_bullet_ptd_ck","item_lpd_bullet_ptd_count","item_lpd_bullet_ptd_only","itk_ck","itk_count","itk_only","main_img_check",
+                                                "main_img_zoom_check","image_mat_title_check","missing_barcode_check","asin_status","userid","year","month","week","node","defect_count","correction_count_of_asins","delta_for_corection","yes_count","na_count","no_count","is_actual_corrected","validation_for_correction","is_variation_corrected",
+                                                "post_enrich_status","cons_pasin_a","cons_pasin_b","cons_pasin_c","cons_pasin_d","cons_pasin_e"])
+
+                
+        return autopatched_df

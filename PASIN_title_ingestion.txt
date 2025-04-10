@@ -1,0 +1,200 @@
+# This script must contain a Python class named {scriptObjectName}, which contains a static
+# method 'execute' that receives three inputs:
+# - "spark", which is the pyspark SparkSession in which the code is running
+# - "input", a Python Dict of NodeID (str) -> pyspark DataFrame holding all the input Datasets
+# - "execParams", a Python Dict of str -> str that contains the profile variables
+# 'execute' must return a pyspark DataFrame
+class Script:
+    @staticmethod
+    def execute(spark, input, execParams):
+
+        # profile variables are accessible via the execParams argument and can be read with execParams["myVariable"]
+        # new profile variables can be declared by including a comment in your script with the format below #
+        # for more information about using profile variables see https://w.amazon.com/index.php/Cradle/ScalaProfileVariables
+        #from pyspark.sql import SparkSession, Row 
+        #import json
+        #import traceback
+        #import datetime
+        #import re
+        #from collections import Counter
+        
+        marketplace_id = execParams["marketplace_id"] # ${marketplace_id}
+        legalEntityId = execParams["legalEntityId"] # ${legalEntityId}
+        DataSetDate = execParams['date']
+        day_minus = execParams['day_minus'] # ${day_minus}
+ 
+        realm_dic = { 
+                        "1":"USAmazon",
+                        "7":"USAmazon",
+                        "3":"EUAmazon",
+                        "4":"EUAmazon",
+                        "5":"EUAmazon",
+                        "35691":"EUAmazon",
+                        "44551":"EUAmazon",
+                        "328451":"EUAmazon",
+                        "338801":"EUAmazon",
+                        "338811":"EUAmazon",
+                        "338851":"EUAmazon",
+                        "704403121":"EUAmazon",
+                        "712115121":"EUAmazon",
+                        "6":"FEAmazon",
+                        "771770":"USAmazon",
+                        "111172":"FEAmazon",
+                        "104444012": "FEAmazon"
+            
+        }
+        
+        consumables_gl = ['121','194','510','325','75','199','467','370']    
+        
+        softlines_gl = ['193','197','309','241']
+
+        
+        
+        PASINdefects = spark.sql(f"""
+                select 
+                usp.client_id,
+                usp.program_id,
+                usp.usecase_id,
+                usp.uno_work_item_id,
+                usp.realm,
+                get_json_object(metadata, "$.itemDetail.legalEntityId") legalEntityId,
+                get_json_object(metadata, "$.itemDetail.asin") asin,
+                get_json_object(metadata, "$.entityId.sherlockId") sherlockId,
+                get_json_object(output, "$.ruleVersion.ruleName") ruleName,
+                get_json_object(output, "$.executionDetail.ruleOutput.isPassed") isPassed,
+                get_json_object(output, "$.executionDetail.ruleOutput.errorMessage") errorMessage
+                from RBS_UNO_STREAM_AF2 usp
+                where 
+                realm = '{realm_dic[str(marketplace_id)]}'
+                and state_name = 'AF2_FIND_OUTPUT_RULES_SET_PASIN'
+                and client_id = 'SelectionBu'
+                and program_id = 'PASIN'
+                and usecase_id = 'AF2_FIND_RULES_SET_PASIN'
+                and get_json_object(metadata, "$.itemDetail.legalEntityId") = {legalEntityId}
+                and creation_timestamp between  CAST('{str(DataSetDate)}' AS DATE)-{day_minus} and  CAST('{str(DataSetDate)}' AS DATE)
+                and get_json_object(output, "$.ruleVersion.ruleName") in ('model_match_with_title','Color_match_with_title','size_match_with_title','Brand_match_with_title','Image_available');""")
+                    
+                    
+        ingestionsrc = spark.sql(f"""            
+                select
+                usp.uno_work_item_id as uno_work_id,
+                usp.ingestion_source_details,
+                split(replace(input , '"', ''), ',')[2] gl_code,
+                case
+                when ingestion_source_details like '%1P%' then '1P'
+                else '3P'
+                end as offer_type
+                from RBS_UNO_STREAM_AF2 usp
+                where 
+                realm = '{realm_dic[str(marketplace_id)]}'
+                and state_name = 'Ingestion'
+                and client_id = 'SelectionBu'
+                and program_id = 'PASIN'
+                and usecase_id = 'AF2_FIND_RULES_SET_PASIN'
+                and (ingestion_source_details like '%Automation/PASIN/3P/Olympic%' or 
+	                    ingestion_source_details like '%Automation/PASIN/1P/Olympic%' or 
+	                    ingestion_source_details like '%Automation/PASIN/1P/PASIN%' or 
+	                    ingestion_source_details like '%Automation/PASIN/3P/PASIN%' or
+	                    ingestion_source_details like '%Automation/PASIN/1P/olympic%' or 
+	                    ingestion_source_details like '%Automation/PASIN/3P/olympic%' or
+	                    ingestion_source_details like '%Automation/PASIN/1P/voyager2024%' or
+	                    ingestion_source_details like '%Automation/PASIN/3P/voyager2024%')
+          
+                and split(replace(input , '"', ''), ',')[1] = {legalEntityId}
+                and creation_timestamp between  CAST('{str(DataSetDate)}' AS DATE)-{day_minus} and  CAST('{str(DataSetDate)}' AS DATE);""")
+        
+        
+    
+        
+        PASINdefects = PASINdefects.join(ingestionsrc, PASINdefects.uno_work_item_id == ingestionsrc.uno_work_id,"inner") 
+
+        legal_mp_dict = { '101':1, '102':3, '103':4, '108':5, '109':6, '115':7,
+                      '129':35691, '130':44551, '131':44571, '132':526970,
+                      '133':771770, '135':111172, '137':328451, '139':338801,
+                      '140':338811, '141':338851, '146':704403121, '148':712115121,
+                      '165':104444012, '142':623225021, '151':679831071
+                    }
+        
+        defect_dict_DF = {}
+    
+        for one_row in PASINdefects.rdd.toLocalIterator():
+            if one_row.uno_work_item_id not in defect_dict_DF.keys():
+                defect_dict_DF[one_row.uno_work_item_id] = {'legalEntityId': '', 'gl_code':'', 'PL':'','offer_type':'','mp_id': '', 'asin': '',
+                                                         'isPassed_Image_available': '',
+                                                         'isPassed_Brand_match_with_title': '',
+                                                         'isPassed_Color_match_with_title': '',
+                                                         'isPassed_size_match_with_title': '', 
+                                                         'isPassed_model_match_with_title': ''
+                                                         }
+                                                         
+                defect_dict_DF[one_row.uno_work_item_id]['legalEntityId'] = one_row.legalEntityId
+                defect_dict_DF[one_row.uno_work_item_id]['gl_code'] = one_row.gl_code
+                defect_dict_DF[one_row.uno_work_item_id]['asin'] = one_row.asin
+                
+                if one_row.gl_code in consumables_gl:
+                    defect_dict_DF[one_row.uno_work_item_id]['PL'] = 'Consumables'
+                elif one_row.gl_code in softlines_gl:
+                    defect_dict_DF[one_row.uno_work_item_id]['PL'] = 'Softlines'
+                else:
+                    defect_dict_DF[one_row.uno_work_item_id]['PL'] = 'Hardlines'    
+                
+                defect_dict_DF[one_row.uno_work_item_id]['offer_type'] = one_row.offer_type
+                defect_dict_DF[one_row.uno_work_item_id][f'isPassed_{one_row.ruleName}'] = one_row.isPassed
+                try:
+                    defect_dict_DF[one_row.uno_work_item_id]['mp_id'] = legal_mp_dict[str(one_row.legalEntityId)]
+                except:
+                    defect_dict_DF[one_row.uno_work_item_id]['mp_id'] = 0
+    
+            else:
+                defect_dict_DF[one_row.uno_work_item_id][f'isPassed_{one_row.ruleName}'] = one_row.isPassed
+                defect_dict_DF[one_row.uno_work_item_id][f'errorMessage_{one_row.ruleName}'] = one_row.errorMessage
+
+        mp_dict = {    
+                    "338801": 'AE', "111172": 'AU', "526970": 'BR',
+                    "7": 'CA', "771770": 'MX', "328451": 'NL',
+                    "338811": 'SA', "338851": 'TR', "623225021": 'EG',
+                    "712115121": 'PL', "704403121": 'SE', "104444012": 'SG',
+                    "4": 'DE', "44551": 'ES', "5": 'FR', "44571": 'IN', 
+                    "35691": 'IT', "6": 'JP', "1": 'US', "3": 'GB'
+                }
+        
+        
+        dnd_brands = spark.read.csv(r"s3://pasin1.5/PASINatrifacts/dnd_brand_list.csv", header=True)
+        
+        dnd_brand_list = []
+        for i in dnd_brands.select("brand_mp").distinct().collect():
+            dnd_brand_list.append(str(i.brand_mp).lower())
+            
+    
+        def dnd_brand_check(one_row):
+            try:
+                mp_name = mp_dict[str(one_row['mp_id'])]
+            except:
+                mp_name = ''
+            
+            try:
+                brand_name = str(one_row['errorMessage_Brand_match_with_title']).split('|||')[1]
+            except:
+                brand_name = ''
+        
+            brand_string = mp_name + ' | ' + brand_name
+            
+            if str(brand_string).lower() in dnd_brand_list:
+                return 'YES'
+            else:
+                return 'NO'
+        
+        
+        defect_data_list = []
+        for one_ip in defect_dict_DF:
+            is_dnd_brand = dnd_brand_check(defect_dict_DF[one_ip])
+            if is_dnd_brand == 'NO':
+                defect_data_list.append(defect_dict_DF[one_ip])
+        
+        PASIN_defect_dataframe = spark.createDataFrame(defect_data_list)
+        
+        PASIN_defect_dataframe = PASIN_defect_dataframe.filter(PASIN_defect_dataframe.isPassed_Image_available == 'true')
+        
+
+        return PASIN_defect_dataframe
+            
